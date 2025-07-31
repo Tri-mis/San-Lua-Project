@@ -1,197 +1,119 @@
 #include <Arduino.h>
-#include <queue>
 
-enum class MoveMode { STEP, DISTANCE };
+class MyStepper {
+public:
+  int step_pin = 0;
+  int dir_pin = 0;
+  
+  int target_step = 0;
+  int current_step = 0;
 
-class Command 
-{
-  private:
-    MoveMode mode;
-    float value;
+  int vibrate_time = 0;
+  int target_vibrate_time = 0;
+  int vibrate_amplitude = 0;
 
-  public:
-    Command(MoveMode mode, float value)
-      : mode(mode), value(value) {}
+  float speed = 0.5f; // step per millisecond
+  unsigned long step_delay_micros;
+  unsigned long last_step_time = 0;
 
-    MoveMode getMode() const { return mode; }
-    float getValue() const { return value; }
-};
+  TaskHandle_t taskHandle = NULL;
 
-class StepperController {
-  public:
-    float speed;                  // steps/ms
-    float distPerStep;            // mm/step
-    int stepPin, dirPin;
-    int limitPin1, limitPin2;
-    int emgPin;
-
-    long currentStep = 0;
-    long targetStep = 0;
-
-    std::queue<Command> commandQueue; //"std::" is the offical library call, "queue" is a type in the library call, this type is a FIFO queue, "<Command>" let the complier know that Command is the type in the queue
-    TaskHandle_t runTaskHandle;
-    
-  public:
-    StepperController(float speed, float distPerStep,
-                      int stepPin, int dirPin,
-                      int limitPin1, int limitPin2, int emgPin);
-
-    void homing(bool direction);
-    void run();
-    void readCommand();
-
-    void addCommand(MoveMode mode, float value);
-    void getStatus(MoveMode mode, float &target, float &remaining);
-    bool isBusy() const;
-
-  private:
-    void stepMotor(bool dir);
-    void stopMotor();
-    bool checkEmergency();
-    bool checkLimit(bool dir);
-
-};
-
-// ------------------ Implementation ------------------
-
-StepperController::StepperController(float speed, float distPerStep,
-                                     int stepPin, int dirPin,
-                                     int limitPin1, int limitPin2, int emgPin)
-    : speed(speed), distPerStep(distPerStep),
-      stepPin(stepPin), dirPin(dirPin),
-      limitPin1(limitPin1), limitPin2(limitPin2), emgPin(emgPin) {
-
-  pinMode(stepPin, OUTPUT);
-  pinMode(dirPin, OUTPUT);
-  pinMode(limitPin1, INPUT_PULLUP);
-  pinMode(limitPin2, INPUT_PULLUP);
-  pinMode(emgPin, INPUT_PULLUP);
-
-  xTaskCreatePinnedToCore(
-    [](void *param){static_cast<StepperController*>(param)->run();}, 
-    "StepperRun", 
-    4096, 
-    this, 
-    1, 
-    &runTaskHandle, 
-    1);
-}
-
-void StepperController::addCommand(MoveMode mode, float value) {
-  commandQueue.push(Command(mode, value));
-}
-
-void StepperController::readCommand() {
-  if (!commandQueue.empty() && currentStep == targetStep) {
-    Command cmd = commandQueue.front();
-    commandQueue.pop();
-
-    if (cmd.getMode() == MoveMode::STEP) {
-      targetStep = currentStep + static_cast<long>(cmd.getValue());
-    } else {
-      targetStep = currentStep + static_cast<long>(cmd.getValue() / distPerStep);
-    }
+  MyStepper(int step_pin, int dir_pin)
+    : step_pin(step_pin), dir_pin(dir_pin) {
+    step_delay_micros = (unsigned long)(1000.0f / speed);
+    pinMode(step_pin, OUTPUT);
+    pinMode(dir_pin, OUTPUT);
   }
-}
 
-void StepperController::run() {
-  int stepDelayMicros = (int)(1000.0f / speed);  // 500 µs if speed = 2.0
-  unsigned long lastStepTime = micros();
+  void set_speed(float new_speed) {
+    this->speed = new_speed;
+    this->step_delay_micros = (unsigned long)(1000.0f / speed);
+  }
 
-  while (true) {
-    if (checkEmergency()) 
-    {
-      stopMotor();
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
-    }
+  void set_vibration(int vibrate_amplitude, int vibrate_times) {
+    this->vibrate_amplitude = vibrate_amplitude;
+    this->target_vibrate_time = vibrate_times;
+    this->vibrate_time = 0; // reset when starting new vibration task
+  }
 
-    readCommand();
+  void set_target_step(int target_step) {
+    this->target_step = target_step;
+  }
 
-    long diff = targetStep - currentStep;
+  void stepMotor(bool dir) {
+    digitalWrite(dir_pin, dir);
+    digitalWrite(step_pin, HIGH);
+    delayMicroseconds(50);
+    digitalWrite(step_pin, LOW);
+
+    current_step += dir ? 1 : -1;
+  }
+
+  void run() {
+    int diff = target_step - current_step;
     bool dir = diff > 0;
 
-    if (diff != 0 && !checkLimit(dir)) {
-      unsigned long now = micros();
-      if ((now - lastStepTime) >= (unsigned long)stepDelayMicros) {
-        stepMotor(dir);  // 50 µs pulse only
-        lastStepTime = now;
-      }
+    if (diff == 0 && vibrate_time < target_vibrate_time) {
+      if ((vibrate_time % 2) == 0)
+        target_step = current_step + vibrate_amplitude;
+      else
+        target_step = current_step - vibrate_amplitude;
+
+      vibrate_time++;
     }
 
-    yield();  // Let other tasks run
+    if (diff != 0) {
+      unsigned long current_step_time = micros();
+      if (current_step_time - last_step_time >= step_delay_micros) {
+        stepMotor(dir);
+        last_step_time = current_step_time;
+      }
+    }
   }
-}
 
-
-void StepperController::homing(bool direction) {
-  digitalWrite(dirPin, direction);
-  while (!checkLimit(direction)) {
-    digitalWrite(stepPin, HIGH);
-    delayMicroseconds(500);
-    digitalWrite(stepPin, LOW);
-    delayMicroseconds(2000);
-    yield();
+  void start_task() {
+    xTaskCreatePinnedToCore(
+      [](void* param) {
+        MyStepper* stepper = static_cast<MyStepper*>(param);
+        for (;;) {
+          stepper->run();
+          delayMicroseconds(100);
+        }
+      },
+      NULL,    
+      4096,        
+      this,        
+      1,           
+      &taskHandle, 
+      1       
+    );
   }
-  currentStep = 0;
-  targetStep = 0;
-}
+};
 
-void StepperController::stepMotor(bool dir) {
-  digitalWrite(dirPin, dir);
-  digitalWrite(stepPin, HIGH);
-  delayMicroseconds(50);  // short reliable pulse
-  digitalWrite(stepPin, LOW);
-  currentStep += (dir ? 1 : -1);
-}
 
-void StepperController::stopMotor() {
-  // Optional: disable motor driver here
-}
-
-bool StepperController::checkEmergency() {
-  return digitalRead(emgPin) == LOW;
-}
-
-bool StepperController::checkLimit(bool dir) {
-  return digitalRead(dir ? limitPin2 : limitPin1) == LOW;
-}
-
-void StepperController::getStatus(MoveMode mode, float &target, float &remaining) {
-  if (mode == MoveMode::STEP) {
-    target = static_cast<float>(targetStep);
-    remaining = static_cast<float>(targetStep - currentStep);
-  } else {
-    target = targetStep * distPerStep;
-    remaining = (targetStep - currentStep) * distPerStep;
-  }
-}
-
-bool StepperController::isBusy() const {
-  return currentStep != targetStep;
-}
-
-// ------------------ Instantiate Controller ------------------
-
-StepperController motor(
-  2.0,        // 2 steps/ms → 500 µs per step
-  0.1,        // 0.1 mm per step
-  33, 25,     // stepPin, dirPin
-  26, 27,     // limitPin1, limitPin2
-  18          // emergencyPin
-);
-
-long old_current_step = 0;
+MyStepper myStepper_A(33, 25);
 
 void setup() {
   Serial.begin(115200);
-  motor.addCommand(MoveMode::DISTANCE, -100.0);  // Example command
+  myStepper_A.start_task();
+
+  myStepper_A.set_speed(0.05);
+  myStepper_A.set_target_step(1000);
+  myStepper_A.set_vibration(1, 500);
 }
 
+int current_step = 0;
+int old_step = 0;
+
+
 void loop() {
-  static unsigned long lastPrint = 0;
-  if (millis() - lastPrint >= 200) {
-    Serial.printf("Current step: %ld\n", motor.currentStep);
-    lastPrint = millis();
+
+  current_step = myStepper_A.current_step;
+
+  if (current_step != old_step)
+  {
+    Serial.println("current_step: " + String(current_step));
+    old_step = current_step;
   }
+
 }
