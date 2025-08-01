@@ -1,119 +1,65 @@
 #include <Arduino.h>
+#include "myStepper.h"
 
-class MyStepper {
-public:
-  int step_pin = 0;
-  int dir_pin = 0;
-  
-  int target_step = 0;
-  int current_step = 0;
+MyStepper bed_stepper(33, 25, 26, 27, 22, "BED");
+MyStepper box_stepper(19, 21, 23, 15, 22, "BOX");
 
-  int vibrate_time = 0;
-  int target_vibrate_time = 0;
-  int vibrate_amplitude = 0;
+void handleSerialInput() {
+  if (!Serial.available()) return;
 
-  float speed = 0.5f; // step per millisecond
-  unsigned long step_delay_micros;
-  unsigned long last_step_time = 0;
+  String input = Serial.readStringUntil('\n');
+  input.trim();
 
-  TaskHandle_t taskHandle = NULL;
+  int idx1 = input.indexOf('_');
+  int idx2 = input.indexOf('_', idx1 + 1);
+  int idx3 = input.indexOf('_', idx2 + 1);
 
-  MyStepper(int step_pin, int dir_pin)
-    : step_pin(step_pin), dir_pin(dir_pin) {
-    step_delay_micros = (unsigned long)(1000.0f / speed);
-    pinMode(step_pin, OUTPUT);
-    pinMode(dir_pin, OUTPUT);
+  if (idx1 == -1 || idx2 == -1) {
+    Serial.println("Invalid command format.");
+    return;
   }
 
-  void set_speed(float new_speed) {
-    this->speed = new_speed;
-    this->step_delay_micros = (unsigned long)(1000.0f / speed);
+  String motor = input.substring(0, idx1);
+  String command = input.substring(idx1 + 1, idx2);
+  String param1Str = (idx3 != -1) ? input.substring(idx2 + 1, idx3) : input.substring(idx2 + 1);
+  String param2Str = (idx3 != -1) ? input.substring(idx3 + 1) : "";
+
+  MyStepper* target = nullptr;
+  if (motor == "BED") {
+    target = &bed_stepper;
+  } else if (motor == "BOX") {
+    target = &box_stepper;
+  } else {
+    Serial.println("Unknown motor name: " + motor);
+    return;
   }
 
-  void set_vibration(int vibrate_amplitude, int vibrate_times) {
-    this->vibrate_amplitude = vibrate_amplitude;
-    this->target_vibrate_time = vibrate_times;
-    this->vibrate_time = 0; // reset when starting new vibration task
+  if (command == "STEP") {
+    int steps = param1Str.toInt();
+    target->addCommand(StepperCommand(StepperMode::NORMAL_RUN, steps));
+  } else if (command == "HOME") {
+    bool towardFront = (param1Str == "TRUE" || param1Str == "true" || param1Str == "1");
+    target->addCommand(StepperCommand(StepperMode::HOMING, towardFront));
+  } else if (command == "VIBRATE") {
+    int amp = param1Str.toInt();
+    int times = param2Str.toInt();
+    target->addCommand(StepperCommand(StepperMode::VIBRATE, amp, times));
+  } else if (command == "SPEED") {
+    int speedMillis = param1Str.toInt();  // e.g., 500 → 0.5 steps/ms
+    target->addCommand(StepperCommand(StepperMode::SET_SPEED, speedMillis));
+  } else {
+    Serial.println("Unknown command type: " + command);
   }
-
-  void set_target_step(int target_step) {
-    this->target_step = target_step;
-  }
-
-  void stepMotor(bool dir) {
-    digitalWrite(dir_pin, dir);
-    digitalWrite(step_pin, HIGH);
-    delayMicroseconds(50);
-    digitalWrite(step_pin, LOW);
-
-    current_step += dir ? 1 : -1;
-  }
-
-  void run() {
-    int diff = target_step - current_step;
-    bool dir = diff > 0;
-
-    if (diff == 0 && vibrate_time < target_vibrate_time) {
-      if ((vibrate_time % 2) == 0)
-        target_step = current_step + vibrate_amplitude;
-      else
-        target_step = current_step - vibrate_amplitude;
-
-      vibrate_time++;
-    }
-
-    if (diff != 0) {
-      unsigned long current_step_time = micros();
-      if (current_step_time - last_step_time >= step_delay_micros) {
-        stepMotor(dir);
-        last_step_time = current_step_time;
-      }
-    }
-  }
-
-  void start_task() {
-    xTaskCreatePinnedToCore(
-      [](void* param) {
-        MyStepper* stepper = static_cast<MyStepper*>(param);
-        for (;;) {
-          stepper->run();
-          delayMicroseconds(100);
-        }
-      },
-      NULL,    
-      4096,        
-      this,        
-      1,           
-      &taskHandle, 
-      1       
-    );
-  }
-};
-
-
-MyStepper myStepper_A(33, 25);
+}
 
 void setup() {
   Serial.begin(115200);
-  myStepper_A.start_task();
-
-  myStepper_A.set_speed(0.05);
-  myStepper_A.set_target_step(1000);
-  myStepper_A.set_vibration(1, 500);
+  bed_stepper.beginTask();
+  box_stepper.beginTask();
+  bed_stepper.setSpeed(1000);
+  box_stepper.setSpeed(100);
 }
 
-int current_step = 0;
-int old_step = 0;
-
-
 void loop() {
-
-  current_step = myStepper_A.current_step;
-
-  if (current_step != old_step)
-  {
-    Serial.println("current_step: " + String(current_step));
-    old_step = current_step;
-  }
-
+  handleSerialInput();
 }
