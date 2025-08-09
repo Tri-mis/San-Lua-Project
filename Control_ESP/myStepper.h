@@ -34,6 +34,12 @@ private:
     std::queue<StepperCommand> commandQueue;
     TaskHandle_t taskHandle = nullptr;
 
+public:
+    bool reachedTarget;
+    bool isHomed;
+    bool doneVibrate;
+
+private:
     bool checkFrontLimit();
     bool checkRearLimit();
     bool checkEmergency();

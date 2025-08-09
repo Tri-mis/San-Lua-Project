@@ -109,13 +109,19 @@ void MyStepper::taskLoop(void* param) {
                     delay(10);
                     break;
                 case StepperMode::NORMAL_RUN:
+                    self->reachedTarget = false;
                     self->moveToTarget(cmd.param1);
+                    self->reachedTarget = true;
                     break;
                 case StepperMode::HOMING:
+                    self->isHomed = false;
                     self->homing(cmd.param1 != 0);
+                    self->isHomed = true;
                     break;
                 case StepperMode::VIBRATE:
+                    self->doneVibrate = false;
                     self->vibrate(cmd.param1, cmd.param2);
+                    self->doneVibrate = true;
                     break;
                 case StepperMode::SET_SPEED:
                     self->speed = cmd.param1 / 1000.0f;

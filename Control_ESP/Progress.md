@@ -17,7 +17,7 @@
             - Vibrate at 3 step amplitude makes the rice spread out
         - I dont think I ever need to vibrate the box motor.
     
-- There is also emergency pin, for the time being, the emergency pin for both stepper is pin GPIO22. When this pin is pull down, the motor jump out of its action and return to idle state
+- There is also an emergency pin, for the time being, the emergency pin for both stepper is pin GPIO22. When this pin is pull down, the motor jump out of its action and return to idle state
 - The stepper action are blocking, meaning it can only do the second action after finishing the first action, except they are stoped by the emergency pin or limit switch, then the action is interrupt and terminate imidiately.
 - There are some more things to do: 
     - recode to learn
